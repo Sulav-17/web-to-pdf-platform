@@ -51,7 +51,8 @@ class ConvertRequest(RenderOptions):
 class JobCreateRequest(ConvertRequest):
     """Async job creation adds idempotency + webhook fields."""
 
-    idempotency_key: str | None = None
+    idempotency_key: Annotated[
+        str, Field(min_length=1, max_length=255),] | None = None
     webhook_url: str | None = None
 
 

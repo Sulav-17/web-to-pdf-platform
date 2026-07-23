@@ -83,7 +83,23 @@ def upgrade() -> None:
         sa.Column("expires_at", sa.TIMESTAMP(timezone=True), nullable=True),
         sa.Column("created_at", sa.TIMESTAMP(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", sa.TIMESTAMP(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.UniqueConstraint("idempotency_key", name="uq_jobs_idempotency_key"),
+        sa.CheckConstraint(
+            "kind IN ('html', 'url', 'pack_merge')",
+            name="ck_jobs_kind",
+        ),
+        sa.CheckConstraint(
+            "status IN ('queued', 'rendering', 'completed', 'failed')",
+            name="ck_jobs_status",
+        ),
+        sa.CheckConstraint(
+            "idempotency_key IS NULL OR char_length(idempotency_key) <= 255",
+            name="ck_jobs_idempotency_key_length",
+        ),
+        sa.UniqueConstraint(
+            "user_id",
+            "idempotency_key",
+            name="uq_jobs_user_id_idempotency_key",
+        ),
     )
     op.create_index("ix_jobs_user_id", "jobs", ["user_id"])
 
@@ -95,6 +111,10 @@ def upgrade() -> None:
         sa.Column("reason", sa.Text(), nullable=False),
         sa.Column("job_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True),
         sa.Column("created_at", sa.TIMESTAMP(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.CheckConstraint(
+            "reason IN ('monthly_grant', 'conversion', 'pack', 'overage_purchase', 'admin')",
+            name="ck_credit_ledger_reason",
+        ),
     )
     op.create_index("ix_credit_ledger_user_id", "credit_ledger", ["user_id"])
 

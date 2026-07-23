@@ -17,16 +17,14 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from . import models
 
-# --- Ledger reasons -------------------------------------------------------
-# NOTE (contract issue): the A-ENGINE spec's ledger reason list did not include
-# a value for *refunds*. To preserve the schema we reuse "admin" (with job_id)
-# for failure refunds. See ORCHESTRATION.md.
-REASON_RENDER: Final = "render"
-REASON_GRANT: Final = "grant"
-REASON_SUBSCRIPTION: Final = "subscription"
-REASON_ADMIN: Final = "admin"  # also used for failure refunds
+# The approved schema has no dedicated refund reason. Failure refunds use
+# reason="admin" with the job_id, which also gives us an idempotency key.
+REASON_MONTHLY_GRANT: Final = "monthly_grant"
+REASON_CONVERSION: Final = "conversion"
+REASON_PACK: Final = "pack"
+REASON_OVERAGE_PURCHASE: Final = "overage_purchase"
+REASON_ADMIN: Final = "admin"
 
-# --- Costs ----------------------------------------------------------------
 COST_HTML: Final = 1
 COST_URL: Final = 2
 
@@ -47,7 +45,7 @@ class InsufficientCreditsError(Exception):
 @dataclass
 class ChargedJob:
     id: uuid.UUID
-    reused: bool  # True when returned via idempotency dedupe (no new charge)
+    reused: bool
 
 
 async def get_balance(conn: AsyncConnection, user_id: uuid.UUID) -> int:
@@ -63,7 +61,7 @@ async def grant_credits(
     conn: AsyncConnection,
     user_id: uuid.UUID,
     amount: int,
-    reason: str = REASON_GRANT,
+    reason: str = REASON_MONTHLY_GRANT,
     job_id: uuid.UUID | None = None,
 ) -> None:
     await conn.execute(
@@ -86,16 +84,11 @@ async def create_job_charged(
     idempotency_key: str | None = None,
     webhook_url: str | None = None,
 ) -> ChargedJob:
-    """Atomically lock the user, dedupe, check balance, insert job + charge.
-
-    Must be called inside an open transaction (``db.transaction``).
-    """
-    # Serialize all of this user's credit operations.
+    """Lock the user, deduplicate, check balance, insert job, and charge."""
     await conn.execute(
         select(models.users.c.id).where(models.users.c.id == user_id).with_for_update()
     )
 
-    # Idempotency: return the original job untouched.
     if idempotency_key is not None:
         existing = (
             await conn.execute(
@@ -133,7 +126,10 @@ async def create_job_charged(
     )
     await conn.execute(
         insert(models.credit_ledger).values(
-            user_id=user_id, delta=-cost, reason=REASON_RENDER, job_id=job_id
+            user_id=user_id,
+            delta=-cost,
+            reason=REASON_CONVERSION,
+            job_id=job_id,
         )
     )
     return ChargedJob(id=job_id, reused=False)
@@ -141,18 +137,35 @@ async def create_job_charged(
 
 async def refund_job(
     conn: AsyncConnection, user_id: uuid.UUID, job_id: uuid.UUID, amount: int
-) -> None:
-    """Refund a failed render. Uses reason='admin' (see contract note above)."""
+) -> bool:
+    """Refund a failed job exactly once; return whether a refund was inserted."""
     if amount <= 0:
-        return
+        return False
+
     await conn.execute(
         select(models.users.c.id).where(models.users.c.id == user_id).with_for_update()
     )
+    existing_refund = (
+        await conn.execute(
+            select(models.credit_ledger.c.id)
+            .where(
+                models.credit_ledger.c.user_id == user_id,
+                models.credit_ledger.c.job_id == job_id,
+                models.credit_ledger.c.reason == REASON_ADMIN,
+                models.credit_ledger.c.delta > 0,
+            )
+            .limit(1)
+        )
+    ).first()
+    if existing_refund is not None:
+        return False
+
     await conn.execute(
         insert(models.credit_ledger).values(
             user_id=user_id, delta=amount, reason=REASON_ADMIN, job_id=job_id
         )
     )
+    return True
 
 
 def default_expiry(ttl_seconds: int) -> datetime:

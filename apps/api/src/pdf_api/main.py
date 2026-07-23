@@ -1,4 +1,4 @@
-"""FastAPI application factory, lifespan (browser pool) and request logging."""
+"""FastAPI application factory, lifespan, and request logging."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from .logging_config import (
 )
 from .observability import init_posthog, init_sentry
 from .renderer import BrowserPool
-from .routes import router
+from .routes import drain_background_tasks, router
 from .storage import build_storage_backend
 
 log = get_logger(__name__)
@@ -44,7 +44,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        # Graceful shutdown: stop the browser pool, then release DB connections.
+        # Jobs need the browser and DB while finishing or processing cancellation.
+        await drain_background_tasks(settings.shutdown_grace_seconds)
         await pool.stop()
         await dispose_engine()
         log.info("app.stopped")

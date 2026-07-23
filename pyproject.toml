@@ -1,7 +1,7 @@
 [project]
 name = "web-to-pdf-platform"
 version = "0.1.0"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic>=1.18.5",
     "asyncpg>=0.31.0",

@@ -124,7 +124,7 @@ async def create_user_with_credits(email: str | None = None, credits: int = 75) 
             )
         )
         if credits:
-            await metering.grant_credits(conn, user_id, credits, reason=metering.REASON_GRANT)
+            await metering.grant_credits(conn, user_id, credits, reason=metering.REASON_MONTHLY_GRANT)
     await engine.dispose()
     return user_id, raw_key
 

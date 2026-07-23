@@ -65,7 +65,7 @@ async def bootstrap(email: str) -> tuple[uuid.UUID, str]:
                 )
             )
             await metering.grant_credits(
-                conn, user_id, FREE_GRANT_CREDITS, reason=metering.REASON_GRANT
+                conn, user_id, FREE_GRANT_CREDITS, reason=metering.REASON_MONTHLY_GRANT
             )
 
         await conn.execute(

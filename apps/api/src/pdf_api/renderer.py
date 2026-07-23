@@ -1,13 +1,4 @@
-"""Chromium-backed PDF renderer with a bounded, self-recycling browser pool.
-
-Design:
-- Chromium is launched once during FastAPI lifespan.
-- At most ``max_concurrent`` renders run at a time (asyncio.Semaphore).
-- Every job gets a fresh, isolated ``BrowserContext`` that is always closed.
-- After ``recycle_after`` jobs the browser is retired and relaunched; in-flight
-  renders on the retiring browser finish before it is closed.
-- A disconnected browser (crash) is detected and relaunched on next acquire.
-"""
+"""Chromium-backed PDF renderer with a bounded, self-recycling browser pool."""
 
 from __future__ import annotations
 
@@ -16,7 +7,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from playwright.async_api import Browser, Playwright, async_playwright
+from playwright.async_api import Browser, Playwright, Route, async_playwright
 
 from .logging_config import get_logger
 from .schemas import RenderOptions
@@ -25,7 +16,7 @@ log = get_logger(__name__)
 
 
 class RenderError(Exception):
-    """A render failed (navigation, timeout, crash, ...)."""
+    """A render failed (navigation, timeout, crash, or browser error)."""
 
 
 class OutputTooLargeError(RenderError):
@@ -43,6 +34,11 @@ class _Handle:
 class RenderResult:
     pdf: bytes
     duration_ms: int
+
+
+async def _deny_outbound_request(route: Route) -> None:
+    """Temporary HTML egress deny until the complete A-SEC policy lands."""
+    await route.abort()
 
 
 @dataclass
@@ -68,7 +64,7 @@ class BrowserPool:
         assert self._pw is not None
         return await self._pw.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
+            args=["--disable-dev-shm-usage"],
         )
 
     async def stop(self) -> None:
@@ -85,8 +81,10 @@ class BrowserPool:
         log.info("renderer.stopped")
 
     async def _recycle_locked(self) -> None:
-        old = self._current
         new = _Handle(browser=await self._launch())
+        old = self._current
+        if old is not None:
+            old.retiring = True
         self._current = new
         self._jobs_since_launch = 0
         log.info("renderer.recycled")
@@ -96,11 +94,14 @@ class BrowserPool:
     async def _acquire(self) -> _Handle:
         async with self._lock:
             assert self._current is not None
-            # Crash recovery: relaunch if the browser died.
             if not self._current.browser.is_connected():
-                log.warning("renderer.reconnect", reason="browser disconnected")
+                old = self._current
+                old.retiring = True
                 self._current = _Handle(browser=await self._launch())
                 self._jobs_since_launch = 0
+                if old.inflight == 0:
+                    await old.browser.close()
+                log.warning("renderer.reconnect", reason="browser disconnected")
             elif self._jobs_since_launch >= self.recycle_after:
                 await self._recycle_locked()
             handle = self._current
@@ -137,13 +138,18 @@ class BrowserPool:
             raise OutputTooLargeError(
                 f"output {len(pdf)} bytes exceeds limit {self.max_output_bytes}"
             )
-        duration_ms = int((time.monotonic() - started) * 1000)
-        return RenderResult(pdf=pdf, duration_ms=duration_ms)
+        return RenderResult(
+            pdf=pdf,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
 
     async def _render_once(
         self, browser: Browser, kind: str, source: str, options: RenderOptions
     ) -> bytes:
-        context = await browser.new_context()
+        context = await browser.new_context(
+            accept_downloads=False,
+            service_workers="block",
+        )
         try:
             page = await context.new_page()
             page.set_default_timeout(options.timeout_ms)
@@ -151,6 +157,9 @@ class BrowserPool:
             if kind == "url":
                 await page.goto(source, wait_until=wait_until, timeout=options.timeout_ms)
             else:
+                # HTML may contain remote images, scripts, styles, or fonts. Until
+                # A-SEC validates every request, deny all outbound subresources.
+                await page.route("**/*", _deny_outbound_request)
                 await page.set_content(source, wait_until=wait_until, timeout=options.timeout_ms)
 
             margin = f"{options.margin_mm}mm"
@@ -159,7 +168,12 @@ class BrowserPool:
                 "landscape": options.landscape,
                 "scale": options.scale,
                 "print_background": True,
-                "margin": {"top": margin, "bottom": margin, "left": margin, "right": margin},
+                "margin": {
+                    "top": margin,
+                    "bottom": margin,
+                    "left": margin,
+                    "right": margin,
+                },
             }
             if options.header_template is not None or options.footer_template is not None:
                 pdf_kwargs["display_header_footer"] = True

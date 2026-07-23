@@ -10,6 +10,7 @@ from __future__ import annotations
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     ForeignKey,
     Integer,
@@ -86,7 +87,23 @@ jobs = Table(
     Column("expires_at", TIMESTAMP(timezone=True), nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
     Column("updated_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
-    UniqueConstraint("idempotency_key", name="uq_jobs_idempotency_key"),
+    CheckConstraint(
+        "kind IN ('html', 'url', 'pack_merge')",
+        name="ck_jobs_kind",
+    ),
+    CheckConstraint(
+        "status IN ('queued', 'rendering', 'completed', 'failed')",
+        name="ck_jobs_status",
+    ),
+    CheckConstraint(
+        "idempotency_key IS NULL OR char_length(idempotency_key) <= 255",
+        name="ck_jobs_idempotency_key_length",
+    ),
+    UniqueConstraint(
+        "user_id",
+        "idempotency_key",
+        name="uq_jobs_user_id_idempotency_key",
+    ),
 )
 
 credit_ledger = Table(
@@ -98,6 +115,9 @@ credit_ledger = Table(
     Column("reason", Text, nullable=False),  # see metering.LedgerReason
     Column("job_id", UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "reason IN ('monthly_grant', 'conversion', 'pack', 'overage_purchase', 'admin')", name="ck_credit_ledger_reason"
+    ),
 )
 
 webhook_secrets = Table(

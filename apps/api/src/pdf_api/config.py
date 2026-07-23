@@ -13,34 +13,29 @@ MB = 1024 * 1024
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Database
     database_url: str = Field(
         default="postgresql+asyncpg://postgres:postgres@localhost:5432/web2pdf",
         description="Async SQLAlchemy DSN (asyncpg driver).",
     )
 
-    # Rendering / engine
     enable_url_rendering: bool = False
     max_concurrent_renders: int = 3
     recycle_after_jobs: int = 50
     render_timeout_ms: int = 15_000
     max_html_bytes: int = 10 * MB
     max_output_bytes: int = 50 * MB
+    sync_wait_seconds: float = 20.0
+    shutdown_grace_seconds: float = 20.0
 
-    # Job lifecycle
-    output_ttl_seconds: int = 24 * 60 * 60  # 24 hours
-
-    # Storage (local dev backend)
+    output_ttl_seconds: int = 24 * 60 * 60
     storage_dir: str = "./var/storage"
 
-    # Cloudflare R2 (deferred; only used when *all* values are present)
     r2_account_id: str | None = None
     r2_access_key_id: str | None = None
     r2_secret_access_key: str | None = None
     r2_bucket: str | None = None
     r2_endpoint_url: str | None = None
 
-    # Observability (disabled when absent)
     sentry_dsn: str | None = None
     posthog_api_key: str | None = None
     posthog_host: str = "https://us.i.posthog.com"

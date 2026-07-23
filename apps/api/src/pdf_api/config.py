@@ -24,8 +24,12 @@ class Settings(BaseSettings):
     render_timeout_ms: int = 15_000
     max_html_bytes: int = 10 * MB
     max_output_bytes: int = 50 * MB
+    max_network_requests: int = 150
+    max_network_bytes: int = 30 * MB
     sync_wait_seconds: float = 20.0
     shutdown_grace_seconds: float = 20.0
+    free_requests_per_minute: int = 10
+    paid_requests_per_minute: int = 60
 
     output_ttl_seconds: int = 24 * 60 * 60
     storage_dir: str = "./var/storage"

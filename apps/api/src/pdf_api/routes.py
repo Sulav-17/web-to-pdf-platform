@@ -77,10 +77,7 @@ def _guard_input(req: ConvertRequest, engine: jobservice.EngineState) -> None:
     if req.kind == "url" and not engine.settings.enable_url_rendering:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "URL rendering is disabled (ENABLE_URL_RENDERING=false). "
-                "Full SSRF protection is handled by Task A-SEC."
-            ),
+            detail=("URL rendering is disabled (ENABLE_URL_RENDERING=false)."),
         )
 
 
@@ -157,9 +154,7 @@ async def convert(
     )
     timed_out = False
     try:
-        await asyncio.wait_for(
-            asyncio.shield(task), timeout=engine.settings.sync_wait_seconds
-        )
+        await asyncio.wait_for(asyncio.shield(task), timeout=engine.settings.sync_wait_seconds)
     except TimeoutError:
         timed_out = True
 

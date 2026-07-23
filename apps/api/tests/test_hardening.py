@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from pdf_api import jobservice, metering, models
 from pdf_api.db import connection, transaction
 from pdf_api.jobservice import EngineState
-from pdf_api.renderer import RenderResult
+from pdf_api.renderer import RenderError, RenderResult
 from pdf_api.schemas import RenderOptions
 
 HTML = "<html><body><h1>Hardening</h1></body></html>"
@@ -34,9 +34,7 @@ async def _charged_job(user_id: uuid.UUID) -> uuid.UUID:
     return charged.id
 
 
-async def _wait_for_terminal(
-    client: httpx.AsyncClient, job_id: str, headers: dict[str, str]
-) -> dict[str, object]:
+async def _wait_for_terminal(client: httpx.AsyncClient, job_id: str, headers: dict[str, str]) -> dict[str, object]:
     for _ in range(150):
         response = await client.get(f"/v1/jobs/{job_id}", headers=headers)
         assert response.status_code == 200
@@ -47,44 +45,32 @@ async def _wait_for_terminal(
     raise AssertionError("job did not finish in time")
 
 
-async def test_storage_failure_fails_and_refunds(
-    client: httpx.AsyncClient, engine_state: EngineState
-) -> None:
+async def test_storage_failure_fails_and_refunds(client: httpx.AsyncClient, engine_state: EngineState) -> None:
     user_id, key = await create_user_with_credits()
 
     async def fail_put(*_args: object, **_kwargs: object) -> str:
         raise OSError("forced storage failure")
 
     engine_state.storage.put = fail_put  # type: ignore[method-assign]
-    response = await client.post(
-        "/v1/convert", json={"html": HTML}, headers=auth_headers(key)
-    )
+    response = await client.post("/v1/convert", json={"html": HTML}, headers=auth_headers(key))
 
     assert response.status_code == 502
     assert "storage_error" in response.json()["detail"]
     assert await get_balance(user_id) == 75
 
 
-async def test_repeated_failure_refunds_only_once(
-    client: httpx.AsyncClient, engine_state: EngineState
-) -> None:
+async def test_repeated_failure_refunds_only_once(client: httpx.AsyncClient, engine_state: EngineState) -> None:
     user_id, key = await create_user_with_credits()
 
     async def fail_put(*_args: object, **_kwargs: object) -> str:
         raise OSError("forced storage failure")
 
     engine_state.storage.put = fail_put  # type: ignore[method-assign]
-    response = await client.post(
-        "/v1/convert", json={"html": HTML}, headers=auth_headers(key)
-    )
+    response = await client.post("/v1/convert", json={"html": HTML}, headers=auth_headers(key))
     assert response.status_code == 502
 
     async with connection() as conn:
-        job_id = (
-            await conn.execute(
-                select(models.jobs.c.id).where(models.jobs.c.user_id == user_id)
-            )
-        ).scalar_one()
+        job_id = (await conn.execute(select(models.jobs.c.id).where(models.jobs.c.user_id == user_id))).scalar_one()
 
     await asyncio.gather(
         jobservice._fail_and_refund(job_id, user_id, reason="duplicate one"),
@@ -188,9 +174,7 @@ async def test_convert_falls_back_to_202_without_cancelling_job(
     engine_state.pool.render = slow_render  # type: ignore[method-assign]
     engine_state.settings.sync_wait_seconds = 0.01
     try:
-        response = await client.post(
-            "/v1/convert", json={"html": HTML}, headers=auth_headers(key)
-        )
+        response = await client.post("/v1/convert", json={"html": HTML}, headers=auth_headers(key))
         assert response.status_code == 202
         job_id = response.json()["id"]
         final = await _wait_for_terminal(client, job_id, auth_headers(key))
@@ -218,9 +202,7 @@ async def test_recycled_browser_closes_after_inflight_release(
 async def test_html_subresources_are_denied(engine_state: EngineState) -> None:
     hits = 0
 
-    async def handler(
-        _reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
+    async def handler(_reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         nonlocal hits
         hits += 1
         writer.close()
@@ -231,9 +213,8 @@ async def test_html_subresources_are_denied(engine_state: EngineState) -> None:
         assert server.sockets
         port = server.sockets[0].getsockname()[1]
         html = f'<html><body><img src="http://127.0.0.1:{port}/x.png"></body></html>'
-        await engine_state.pool.render(
-            kind="html", source=html, options=RenderOptions()
-        )
+        with pytest.raises(RenderError):
+            await engine_state.pool.render(kind="html", source=html, options=RenderOptions())
         await asyncio.sleep(0.05)
     finally:
         server.close()

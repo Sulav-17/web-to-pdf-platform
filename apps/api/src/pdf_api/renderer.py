@@ -1,4 +1,4 @@
-"""Chromium-backed PDF renderer with a bounded, self-recycling browser pool."""
+"""Chromium PDF renderer with a guarded, recycling browser pool."""
 
 from __future__ import annotations
 
@@ -7,10 +7,18 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from playwright.async_api import Browser, Playwright, Route, async_playwright
+from playwright.async_api import Browser, Playwright, async_playwright
 
 from .logging_config import get_logger
 from .schemas import RenderOptions
+from .security import (
+    Resolver,
+    SecurityPolicy,
+    guarded_context,
+    resolve_host,
+    run_with_hard_timeout,
+    validate_target,
+)
 
 log = get_logger(__name__)
 
@@ -36,16 +44,14 @@ class RenderResult:
     duration_ms: int
 
 
-async def _deny_outbound_request(route: Route) -> None:
-    """Temporary HTML egress deny until the complete A-SEC policy lands."""
-    await route.abort()
-
-
 @dataclass
 class BrowserPool:
     max_concurrent: int = 3
     recycle_after: int = 50
     max_output_bytes: int = 50 * 1024 * 1024
+    max_network_requests: int = 150
+    max_network_bytes: int = 30 * 1024 * 1024
+    resolver: Resolver = field(default=resolve_host, repr=False)
 
     _pw: Playwright | None = field(default=None, init=False)
     _current: _Handle | None = field(default=None, init=False)
@@ -118,9 +124,7 @@ class BrowserPool:
                 except Exception as exc:  # pragma: no cover
                     log.warning("renderer.close_failed", error=str(exc))
 
-    async def render(
-        self, *, kind: str, source: str, options: RenderOptions
-    ) -> RenderResult:
+    async def render(self, *, kind: str, source: str, options: RenderOptions) -> RenderResult:
         assert self._sem is not None, "pool not started"
         started = time.monotonic()
         async with self._sem:
@@ -135,51 +139,70 @@ class BrowserPool:
                 await self._release(handle)
 
         if len(pdf) > self.max_output_bytes:
-            raise OutputTooLargeError(
-                f"output {len(pdf)} bytes exceeds limit {self.max_output_bytes}"
-            )
+            raise OutputTooLargeError(f"output {len(pdf)} bytes exceeds limit {self.max_output_bytes}")
         return RenderResult(
             pdf=pdf,
             duration_ms=int((time.monotonic() - started) * 1000),
         )
 
-    async def _render_once(
-        self, browser: Browser, kind: str, source: str, options: RenderOptions
-    ) -> bytes:
-        context = await browser.new_context(
-            accept_downloads=False,
-            service_workers="block",
-        )
-        try:
-            page = await context.new_page()
-            page.set_default_timeout(options.timeout_ms)
-            wait_until: Any = options.wait_until
+    async def _render_once(self, browser: Browser, kind: str, source: str, options: RenderOptions) -> bytes:
+        async def _render_guarded() -> bytes:
             if kind == "url":
-                await page.goto(source, wait_until=wait_until, timeout=options.timeout_ms)
-            else:
-                # HTML may contain remote images, scripts, styles, or fonts. Until
-                # A-SEC validates every request, deny all outbound subresources.
-                await page.route("**/*", _deny_outbound_request)
-                await page.set_content(source, wait_until=wait_until, timeout=options.timeout_ms)
+                # Validate once before browser work, then again in the route hook
+                # immediately before every connection and redirect.
+                await validate_target(source, self.resolver)
 
-            margin = f"{options.margin_mm}mm"
-            pdf_kwargs: dict[str, Any] = {
-                "format": options.page_size,
-                "landscape": options.landscape,
-                "scale": options.scale,
-                "print_background": True,
-                "margin": {
-                    "top": margin,
-                    "bottom": margin,
-                    "left": margin,
-                    "right": margin,
-                },
-            }
-            if options.header_template is not None or options.footer_template is not None:
-                pdf_kwargs["display_header_footer"] = True
-                pdf_kwargs["header_template"] = options.header_template or "<span></span>"
-                pdf_kwargs["footer_template"] = options.footer_template or "<span></span>"
+            policy = SecurityPolicy(
+                max_requests=self.max_network_requests,
+                max_response_bytes=self.max_network_bytes,
+                request_timeout_ms=options.timeout_ms,
+            )
+            async with guarded_context(
+                browser,
+                policy=policy,
+                resolver=self.resolver,
+            ) as guarded:
+                page = guarded.page
+                page.set_default_timeout(options.timeout_ms)
+                wait_until: Any = options.wait_until
+                try:
+                    if kind == "url":
+                        await page.goto(
+                            source,
+                            wait_until=wait_until,
+                            timeout=options.timeout_ms,
+                        )
+                    else:
+                        await page.set_content(
+                            source,
+                            wait_until=wait_until,
+                            timeout=options.timeout_ms,
+                        )
+                except Exception:
+                    guarded.raise_if_violated()
+                    raise
+                guarded.raise_if_violated()
 
-            return await page.pdf(**pdf_kwargs)
-        finally:
-            await context.close()
+                margin = f"{options.margin_mm}mm"
+                pdf_kwargs: dict[str, Any] = {
+                    "format": options.page_size,
+                    "landscape": options.landscape,
+                    "scale": options.scale,
+                    "print_background": True,
+                    "margin": {
+                        "top": margin,
+                        "bottom": margin,
+                        "left": margin,
+                        "right": margin,
+                    },
+                }
+                if options.header_template is not None or options.footer_template is not None:
+                    pdf_kwargs["display_header_footer"] = True
+                    pdf_kwargs["header_template"] = options.header_template or "<span></span>"
+                    pdf_kwargs["footer_template"] = options.footer_template or "<span></span>"
+
+                pdf = await page.pdf(**pdf_kwargs)
+                guarded.raise_if_violated()
+                return pdf
+
+        return await run_with_hard_timeout(_render_guarded(), options.timeout_ms)

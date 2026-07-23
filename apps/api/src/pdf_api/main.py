@@ -18,6 +18,7 @@ from .logging_config import (
     get_logger,
 )
 from .observability import init_posthog, init_sentry
+from .rate_limit import SlidingWindowRateLimiter
 from .renderer import BrowserPool
 from .routes import drain_background_tasks, router
 from .storage import build_storage_backend
@@ -36,15 +37,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         max_concurrent=settings.max_concurrent_renders,
         recycle_after=settings.recycle_after_jobs,
         max_output_bytes=settings.max_output_bytes,
+        max_network_requests=settings.max_network_requests,
+        max_network_bytes=settings.max_network_bytes,
     )
     await pool.start()
     storage = build_storage_backend(settings)
     app.state.engine = EngineState(settings=settings, pool=pool, storage=storage)
+    app.state.rate_limiter = SlidingWindowRateLimiter()
     log.info("app.started", environment=settings.environment)
     try:
         yield
     finally:
-        # Jobs need the browser and DB while finishing or processing cancellation.
         await drain_background_tasks(settings.shutdown_grace_seconds)
         await pool.stop()
         await dispose_engine()
@@ -54,11 +57,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     configure_logging(get_settings().log_level)
     app = FastAPI(title="web-to-pdf engine", version="0.1.0", lifespan=lifespan)
+    app.state.rate_limiter = SlidingWindowRateLimiter()
 
     @app.middleware("http")
-    async def request_context(
-        request: Request, call_next: Callable[[Request], Awaitable[Response]]
-    ) -> Response:
+    async def request_context(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
         clear_request_context()
         bind_request_context(request_id=request_id)

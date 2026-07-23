@@ -15,7 +15,6 @@ from collections.abc import AsyncIterator, Iterator
 import pytest
 import pytest_asyncio
 
-# --- Environment must be set before importing the app / settings ----------
 os.environ.setdefault(
     "TEST_DATABASE_URL",
     "postgresql+asyncpg://postgres:postgres@localhost:55432/web2pdf_test",
@@ -34,6 +33,7 @@ from pdf_api.config import get_settings  # noqa: E402
 from pdf_api.db import get_engine  # noqa: E402
 from pdf_api.jobservice import EngineState  # noqa: E402
 from pdf_api.keys import generate_api_key, hash_key  # noqa: E402
+from pdf_api.rate_limit import SlidingWindowRateLimiter  # noqa: E402
 from pdf_api.renderer import BrowserPool  # noqa: E402
 from pdf_api.seed import PLAN_SEED  # noqa: E402
 from pdf_api.storage import LocalStorageBackend  # noqa: E402
@@ -80,11 +80,11 @@ async def engine_state() -> AsyncIterator[EngineState]:
         max_concurrent=settings.max_concurrent_renders,
         recycle_after=settings.recycle_after_jobs,
         max_output_bytes=settings.max_output_bytes,
+        max_network_requests=settings.max_network_requests,
+        max_network_bytes=settings.max_network_bytes,
     )
     await pool.start()
-    storage = LocalStorageBackend(
-        tempfile.mkdtemp(prefix="w2p-test-"), ttl_seconds=settings.output_ttl_seconds
-    )
+    storage = LocalStorageBackend(tempfile.mkdtemp(prefix="w2p-test-"), ttl_seconds=settings.output_ttl_seconds)
     state = EngineState(settings=settings, pool=pool, storage=storage)
     try:
         yield state
@@ -97,34 +97,53 @@ async def client(engine_state: EngineState) -> AsyncIterator[httpx.AsyncClient]:
     from pdf_api.main import app
 
     app.state.engine = engine_state
+    app.state.rate_limiter = SlidingWindowRateLimiter()
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 
 
-async def create_user_with_credits(email: str | None = None, credits: int = 75) -> tuple[uuid.UUID, str]:
-    """Insert a verified user + free subscription + API key, granting credits.
-
-    Returns (user_id, raw_api_key).
-    """
+async def create_user_with_credits(
+    email: str | None = None,
+    credits: int = 75,
+) -> tuple[uuid.UUID, str]:
+    """Insert a verified user, free subscription, key, and optional credits."""
     email = email or f"user-{uuid.uuid4().hex[:8]}@example.com"
     raw_key = generate_api_key()
     engine = get_engine()
     async with engine.begin() as conn:
         user_id = uuid.uuid4()
-        await conn.execute(insert(models.users).values(id=user_id, email=email, email_verified=True))
+        await conn.execute(
+            insert(models.users).values(
+                id=user_id,
+                email=email,
+                email_verified=True,
+            )
+        )
         await conn.execute(
             insert(models.subscriptions).values(
-                id=uuid.uuid4(), user_id=user_id, plan_id="free", status="active"
+                id=uuid.uuid4(),
+                user_id=user_id,
+                plan_id="free",
+                status="active",
             )
         )
         await conn.execute(
             insert(models.api_keys).values(
-                id=uuid.uuid4(), user_id=user_id, key_hash=hash_key(raw_key), label="test", active=True
+                id=uuid.uuid4(),
+                user_id=user_id,
+                key_hash=hash_key(raw_key),
+                label="test",
+                active=True,
             )
         )
         if credits:
-            await metering.grant_credits(conn, user_id, credits, reason=metering.REASON_MONTHLY_GRANT)
+            await metering.grant_credits(
+                conn,
+                user_id,
+                credits,
+                reason=metering.REASON_MONTHLY_GRANT,
+            )
     await engine.dispose()
     return user_id, raw_key
 

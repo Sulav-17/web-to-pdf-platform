@@ -56,9 +56,7 @@ async def test_idempotency_key_dedupes(client: httpx.AsyncClient) -> None:
 
 async def test_get_unknown_job_404(client: httpx.AsyncClient) -> None:
     _uid, key = await create_user_with_credits()
-    resp = await client.get(
-        "/v1/jobs/00000000-0000-0000-0000-000000000000", headers=auth_headers(key)
-    )
+    resp = await client.get("/v1/jobs/00000000-0000-0000-0000-000000000000", headers=auth_headers(key))
     assert resp.status_code == 404
 
 

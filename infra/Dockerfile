@@ -4,7 +4,8 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONPATH=/app/apps/api/src
+    PYTHONPATH=/app/apps/api/src \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 # Install uv for dependency management.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
@@ -16,7 +17,8 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # Playwright Chromium + OS deps (installed as root before dropping privileges).
-RUN uv run playwright install --with-deps chromium
+RUN uv run playwright install --with-deps chromium \
+    && chmod -R a+rX /ms-playwright
 
 # Application source.
 COPY apps ./apps

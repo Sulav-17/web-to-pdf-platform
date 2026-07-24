@@ -1,6 +1,6 @@
 """SQLAlchemy Core table definitions (schema source of truth).
 
-The Alembic migration in ``apps/api/alembic/versions`` is authored to match
+The Alembic migrations in ``apps/api/alembic/versions`` are authored to match
 these tables exactly. Tests build the schema from this metadata against a real
 PostgreSQL instance.
 """
@@ -72,8 +72,8 @@ jobs = Table(
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("user_id", UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
     Column("api_key_id", UUID(as_uuid=True), ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True),
-    Column("kind", Text, nullable=False),  # "html" | "url"
-    Column("status", Text, nullable=False),  # queued|rendering|completed|failed
+    Column("kind", Text, nullable=False),
+    Column("status", Text, nullable=False),
     Column("idempotency_key", Text, nullable=True),
     Column("input_hash", Text, nullable=False),
     Column("options", JSONB, nullable=False),
@@ -87,10 +87,7 @@ jobs = Table(
     Column("expires_at", TIMESTAMP(timezone=True), nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
     Column("updated_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
-    CheckConstraint(
-        "kind IN ('html', 'url', 'pack_merge')",
-        name="ck_jobs_kind",
-    ),
+    CheckConstraint("kind IN ('html', 'url', 'pack_merge')", name="ck_jobs_kind"),
     CheckConstraint(
         "status IN ('queued', 'rendering', 'completed', 'failed')",
         name="ck_jobs_status",
@@ -112,11 +109,19 @@ credit_ledger = Table(
     Column("id", BigInteger, primary_key=True, autoincrement=True),
     Column("user_id", UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
     Column("delta", Integer, nullable=False),
-    Column("reason", Text, nullable=False),  # see metering.LedgerReason
+    Column("reason", Text, nullable=False),
     Column("job_id", UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True),
+    Column("external_ref", Text, nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
     CheckConstraint(
-        "reason IN ('monthly_grant', 'conversion', 'pack', 'overage_purchase', 'admin')", name="ck_credit_ledger_reason"
+        "reason IN ('monthly_grant', 'conversion', 'pack', 'overage_purchase', 'admin')",
+        name="ck_credit_ledger_reason",
+    ),
+    UniqueConstraint(
+        "user_id",
+        "reason",
+        "external_ref",
+        name="uq_credit_ledger_external_ref",
     ),
 )
 
@@ -127,7 +132,6 @@ webhook_secrets = Table(
     Column("secret", Text, nullable=False),
 )
 
-# String column type re-exported for callers that prefer VARCHAR helpers.
 __all__ = [
     "metadata",
     "users",

@@ -41,9 +41,7 @@ async def bootstrap(email: str) -> tuple[uuid.UUID, str]:
     async with transaction() as conn:
         await ensure_plans(conn)
 
-        existing = (
-            await conn.execute(select(models.users.c.id).where(models.users.c.email == email))
-        ).first()
+        existing = (await conn.execute(select(models.users.c.id).where(models.users.c.email == email))).first()
         if existing is not None:
             user_id = existing.id
         else:
@@ -64,9 +62,7 @@ async def bootstrap(email: str) -> tuple[uuid.UUID, str]:
                     status="active",
                 )
             )
-            await metering.grant_credits(
-                conn, user_id, FREE_GRANT_CREDITS, reason=metering.REASON_MONTHLY_GRANT
-            )
+            await metering.grant_credits(conn, user_id, FREE_GRANT_CREDITS, reason=metering.REASON_MONTHLY_GRANT)
 
         await conn.execute(
             insert(models.api_keys).values(

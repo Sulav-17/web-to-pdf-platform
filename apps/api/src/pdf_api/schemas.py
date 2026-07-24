@@ -12,9 +12,8 @@ PageSize = Literal["A4", "Letter"]
 WaitUntil = Literal["load", "networkidle"]
 JobKind = Literal["html", "url"]
 JobStatus = Literal["queued", "rendering", "completed", "failed"]
+BillingPurchase = Literal["starter", "pro", "overage_500"]
 
-# 10 MB ceiling on inbound HTML, enforced structurally by Pydantic and again
-# (byte-accurate) in the route so oversize payloads return HTTP 413.
 MAX_HTML_CHARS = 10 * 1024 * 1024
 
 
@@ -51,8 +50,7 @@ class ConvertRequest(RenderOptions):
 class JobCreateRequest(ConvertRequest):
     """Async job creation adds idempotency + webhook fields."""
 
-    idempotency_key: Annotated[
-        str, Field(min_length=1, max_length=255),] | None = None
+    idempotency_key: Annotated[str, Field(min_length=1, max_length=255)] | None = None
     webhook_url: str | None = None
 
 
@@ -64,15 +62,45 @@ class JobResponse(BaseModel):
     output_bytes: int | None = None
     duration_ms: int | None = None
     failure_reason: str | None = None
+    webhook_delivered: bool = False
     expires_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class UsageJob(BaseModel):
+    id: uuid.UUID
+    kind: str
+    status: str
+    credits_charged: int
+    created_at: datetime
 
 
 class UsageResponse(BaseModel):
     user_id: uuid.UUID
     email: str
     plan_id: str | None
+    subscription_status: str | None
+    current_period_end: datetime | None
     monthly_credits: int | None
     balance: int
     jobs_total: int
+    period_started_at: datetime | None
+    credits_granted: int
+    credits_purchased: int
+    credits_spent: int
+    credits_refunded: int
+    credits_remaining: int
+    recent_jobs: list[UsageJob]
+
+
+class CheckoutRequest(BaseModel):
+    purchase: BillingPurchase
+
+
+class BillingLinkResponse(BaseModel):
+    url: str
+
+
+class WebhookSecretResponse(BaseModel):
+    secret: str

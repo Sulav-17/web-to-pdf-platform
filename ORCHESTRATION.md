@@ -159,3 +159,12 @@ Test breakdown (25 total):
 
 Stripe billing, webhooks (columns exist, no delivery), reading-pack merging,
 Chrome extension, landing page, the full SSRF module, and deployment.
+## Task A-BILLING - Stripe billing, usage, and signed callbacks
+
+Status: implemented; local lint, type-check, and tests must pass before commit.
+
+Adds Stripe Checkout for Starter, Pro, and 500-credit overage purchases,
+customer-portal links, verified Stripe webhook processing, non-rolling monthly
+credit grants, provider-event idempotency, the usage page/API, and signed
+outbound job callbacks with three bounded attempts. Live Stripe test-clock
+acceptance remains credential-backed and must be completed before launch.

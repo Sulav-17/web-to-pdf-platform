@@ -40,6 +40,17 @@ class Settings(BaseSettings):
     r2_bucket: str | None = None
     r2_endpoint_url: str | None = None
 
+    stripe_secret_key: str | None = None
+    stripe_webhook_secret: str | None = None
+    stripe_starter_price_id: str | None = None
+    stripe_pro_price_id: str | None = None
+    stripe_overage_price_id: str | None = None
+    billing_success_url: str = "http://localhost:8000/usage?checkout=success"
+    billing_cancel_url: str = "http://localhost:8000/usage?checkout=cancelled"
+    billing_portal_return_url: str = "http://localhost:8000/usage"
+    outbound_webhook_timeout_seconds: float = 5.0
+    webhook_signature_tolerance_seconds: int = 300
+
     sentry_dsn: str | None = None
     posthog_api_key: str | None = None
     posthog_host: str = "https://us.i.posthog.com"

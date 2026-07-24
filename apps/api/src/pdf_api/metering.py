@@ -1,9 +1,4 @@
-"""Credit metering: atomic charge on job creation, refund on render failure.
-
-Balance is the running sum of ``credit_ledger.delta`` for a user. All mutations
-happen inside a single transaction that first locks the user row, guaranteeing
-that concurrent conversions cannot overspend.
-"""
+"""Atomic credit charging, grants, period resets, and failure refunds."""
 
 from __future__ import annotations
 
@@ -13,12 +8,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 from sqlalchemy import func, insert, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from . import models
 
-# The approved schema has no dedicated refund reason. Failure refunds use
-# reason="admin" with the job_id, which also gives us an idempotency key.
 REASON_MONTHLY_GRANT: Final = "monthly_grant"
 REASON_CONVERSION: Final = "conversion"
 REASON_PACK: Final = "pack"
@@ -63,11 +57,72 @@ async def grant_credits(
     amount: int,
     reason: str = REASON_MONTHLY_GRANT,
     job_id: uuid.UUID | None = None,
-) -> None:
-    await conn.execute(
-        insert(models.credit_ledger).values(
-            user_id=user_id, delta=amount, reason=reason, job_id=job_id
+    external_ref: str | None = None,
+) -> bool:
+    """Insert a grant, deduplicating provider-backed grants by external ref."""
+    values = {
+        "user_id": user_id,
+        "delta": amount,
+        "reason": reason,
+        "job_id": job_id,
+        "external_ref": external_ref,
+    }
+    if external_ref is None:
+        await conn.execute(insert(models.credit_ledger).values(**values))
+        return True
+
+    row = (
+        await conn.execute(
+            pg_insert(models.credit_ledger)
+            .values(**values)
+            .on_conflict_do_nothing(
+                constraint="uq_credit_ledger_external_ref",
+            )
+            .returning(models.credit_ledger.c.id)
         )
+    ).first()
+    return row is not None
+
+
+async def reset_and_grant_monthly_credits(
+    conn: AsyncConnection,
+    *,
+    user_id: uuid.UUID,
+    amount: int,
+    period_ref: str,
+) -> bool:
+    """Expire the prior balance and grant one non-rolling monthly allowance."""
+    await conn.execute(select(models.users.c.id).where(models.users.c.id == user_id).with_for_update())
+    grant_ref = f"monthly:{period_ref}"
+    existing = (
+        await conn.execute(
+            select(models.credit_ledger.c.id)
+            .where(
+                models.credit_ledger.c.user_id == user_id,
+                models.credit_ledger.c.reason == REASON_MONTHLY_GRANT,
+                models.credit_ledger.c.external_ref == grant_ref,
+            )
+            .limit(1)
+        )
+    ).first()
+    if existing is not None:
+        return False
+
+    balance = await get_balance(conn, user_id)
+    if balance > 0:
+        await grant_credits(
+            conn,
+            user_id,
+            -balance,
+            reason=REASON_ADMIN,
+            external_ref=f"reset:{period_ref}",
+        )
+    return await grant_credits(
+        conn,
+        user_id,
+        amount,
+        reason=REASON_MONTHLY_GRANT,
+        external_ref=grant_ref,
     )
 
 
@@ -85,9 +140,7 @@ async def create_job_charged(
     webhook_url: str | None = None,
 ) -> ChargedJob:
     """Lock the user, deduplicate, check balance, insert job, and charge."""
-    await conn.execute(
-        select(models.users.c.id).where(models.users.c.id == user_id).with_for_update()
-    )
+    await conn.execute(select(models.users.c.id).where(models.users.c.id == user_id).with_for_update())
 
     if idempotency_key is not None:
         existing = (
@@ -135,16 +188,12 @@ async def create_job_charged(
     return ChargedJob(id=job_id, reused=False)
 
 
-async def refund_job(
-    conn: AsyncConnection, user_id: uuid.UUID, job_id: uuid.UUID, amount: int
-) -> bool:
+async def refund_job(conn: AsyncConnection, user_id: uuid.UUID, job_id: uuid.UUID, amount: int) -> bool:
     """Refund a failed job exactly once; return whether a refund was inserted."""
     if amount <= 0:
         return False
 
-    await conn.execute(
-        select(models.users.c.id).where(models.users.c.id == user_id).with_for_update()
-    )
+    await conn.execute(select(models.users.c.id).where(models.users.c.id == user_id).with_for_update())
     existing_refund = (
         await conn.execute(
             select(models.credit_ledger.c.id)
@@ -162,7 +211,10 @@ async def refund_job(
 
     await conn.execute(
         insert(models.credit_ledger).values(
-            user_id=user_id, delta=amount, reason=REASON_ADMIN, job_id=job_id
+            user_id=user_id,
+            delta=amount,
+            reason=REASON_ADMIN,
+            job_id=job_id,
         )
     )
     return True

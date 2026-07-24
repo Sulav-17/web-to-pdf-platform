@@ -108,9 +108,7 @@ class R2StorageBackend(StorageBackend):
         return key
 
     async def get(self, key: str) -> bytes:
-        obj = await asyncio.to_thread(
-            self._client.get_object, Bucket=self.bucket, Key=key
-        )
+        obj = await asyncio.to_thread(self._client.get_object, Bucket=self.bucket, Key=key)
         body = obj["Body"]
         try:
             return await asyncio.to_thread(body.read)
@@ -118,9 +116,7 @@ class R2StorageBackend(StorageBackend):
             await asyncio.to_thread(body.close)
 
     async def delete(self, key: str) -> None:
-        await asyncio.to_thread(
-            self._client.delete_object, Bucket=self.bucket, Key=key
-        )
+        await asyncio.to_thread(self._client.delete_object, Bucket=self.bucket, Key=key)
 
     async def purge_expired(self) -> int:
         return 0

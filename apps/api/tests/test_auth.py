@@ -23,9 +23,7 @@ async def test_unauthorized_without_key(client: httpx.AsyncClient) -> None:
 
 
 async def test_unauthorized_with_bad_key(client: httpx.AsyncClient) -> None:
-    resp = await client.post(
-        "/v1/convert", json={"html": "<p>x</p>"}, headers=auth_headers("sk_live_bogus")
-    )
+    resp = await client.post("/v1/convert", json={"html": "<p>x</p>"}, headers=auth_headers("sk_live_bogus"))
     assert resp.status_code == 401
 
 
@@ -39,9 +37,7 @@ async def test_inactive_key_rejected(client: httpx.AsyncClient) -> None:
     _uid, key = await create_user_with_credits()
     engine = get_engine()
     async with engine.begin() as conn:
-        await conn.execute(
-            update(api_keys).where(api_keys.c.key_hash == _hash(key)).values(active=False)
-        )
+        await conn.execute(update(api_keys).where(api_keys.c.key_hash == _hash(key)).values(active=False))
     await engine.dispose()
 
     resp = await client.post("/v1/convert", json={"html": "<p>x</p>"}, headers=auth_headers(key))

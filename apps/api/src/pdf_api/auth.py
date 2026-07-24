@@ -5,13 +5,24 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from fastapi import Depends, Header, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, Security, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import func, select, update
 
 from . import models
 from .db import connection
 from .keys import hash_key
 from .rate_limit import SlidingWindowRateLimiter
+
+bearer_scheme = HTTPBearer(
+    bearerFormat="API key",
+    scheme_name="Bearer API key",
+    description=(
+        "Enter the raw CleanPDF API key. "
+        "Swagger sends it as Authorization: Bearer <key>."
+    ),
+    auto_error=False,
+)
 
 
 @dataclass(frozen=True)
@@ -43,9 +54,9 @@ def _extract_bearer(authorization: str | None) -> str:
 
 async def require_api_key(
     request: Request,
-    authorization: str | None = Header(default=None),
+    _credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
 ) -> Principal:
-    token = _extract_bearer(authorization)
+    token = _extract_bearer(request.headers.get("Authorization"))
     key_hash = hash_key(token)
 
     async with connection() as conn:

@@ -16,9 +16,7 @@ async def test_402_when_credits_empty(client: httpx.AsyncClient) -> None:
     assert await get_balance(uid) == 0
 
 
-async def test_refund_after_forced_failure(
-    client: httpx.AsyncClient, engine_state: EngineState
-) -> None:
+async def test_refund_after_forced_failure(client: httpx.AsyncClient, engine_state: EngineState) -> None:
     uid, key = await create_user_with_credits(credits=75)
 
     async def boom(**_kwargs: object) -> None:
@@ -32,9 +30,7 @@ async def test_refund_after_forced_failure(
     assert await get_balance(uid) == 75
 
 
-async def test_output_size_limit_refunds(
-    client: httpx.AsyncClient, engine_state: EngineState
-) -> None:
+async def test_output_size_limit_refunds(client: httpx.AsyncClient, engine_state: EngineState) -> None:
     uid, key = await create_user_with_credits(credits=75)
     engine_state.pool.max_output_bytes = 10  # any real PDF exceeds this
 
@@ -44,9 +40,7 @@ async def test_output_size_limit_refunds(
     assert await get_balance(uid) == 75
 
 
-async def test_input_size_limit_413(
-    client: httpx.AsyncClient, engine_state: EngineState
-) -> None:
+async def test_input_size_limit_413(client: httpx.AsyncClient, engine_state: EngineState) -> None:
     _uid, key = await create_user_with_credits()
     original = engine_state.settings.max_html_bytes
     engine_state.settings.max_html_bytes = 50

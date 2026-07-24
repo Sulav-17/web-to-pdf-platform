@@ -44,7 +44,9 @@ def upgrade() -> None:
     op.create_table(
         "api_keys",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column("key_hash", sa.Text(), nullable=False, unique=True),
         sa.Column("label", sa.Text(), nullable=False),
         sa.Column("active", sa.Boolean(), nullable=False, server_default="true"),
@@ -55,7 +57,9 @@ def upgrade() -> None:
     op.create_table(
         "subscriptions",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column("plan_id", sa.Text(), sa.ForeignKey("plans.id"), nullable=False),
         sa.Column("stripe_customer_id", sa.Text(), nullable=True),
         sa.Column("stripe_sub_id", sa.Text(), nullable=True),
@@ -66,8 +70,15 @@ def upgrade() -> None:
     op.create_table(
         "jobs",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("api_key_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        ),
+        sa.Column(
+            "api_key_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("api_keys.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("kind", sa.Text(), nullable=False),
         sa.Column("status", sa.Text(), nullable=False),
         sa.Column("idempotency_key", sa.Text(), nullable=True),
@@ -106,10 +117,14 @@ def upgrade() -> None:
     op.create_table(
         "credit_ledger",
         sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
-        sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column("delta", sa.Integer(), nullable=False),
         sa.Column("reason", sa.Text(), nullable=False),
-        sa.Column("job_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "job_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+        ),
         sa.Column("created_at", sa.TIMESTAMP(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint(
             "reason IN ('monthly_grant', 'conversion', 'pack', 'overage_purchase', 'admin')",
@@ -120,7 +135,9 @@ def upgrade() -> None:
 
     op.create_table(
         "webhook_secrets",
-        sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+        sa.Column(
+            "user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+        ),
         sa.Column("secret", sa.Text(), nullable=False),
     )
 
@@ -132,10 +149,7 @@ def upgrade() -> None:
     )
     op.bulk_insert(
         plans,
-        [
-            {"id": pid, "monthly_credits": credits, "price_cents": price}
-            for pid, credits, price in PLAN_SEED
-        ],
+        [{"id": pid, "monthly_credits": credits, "price_cents": price} for pid, credits, price in PLAN_SEED],
     )
 
 

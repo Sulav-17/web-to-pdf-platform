@@ -33,8 +33,6 @@ async def test_out_of_range_options_rejected(client: httpx.AsyncClient) -> None:
 
 async def test_url_rendering_disabled_503(client: httpx.AsyncClient) -> None:
     _uid, key = await create_user_with_credits()
-    resp = await client.post(
-        "/v1/convert", json={"url": "https://example.com"}, headers=auth_headers(key)
-    )
+    resp = await client.post("/v1/convert", json={"url": "https://example.com"}, headers=auth_headers(key))
     assert resp.status_code == 503
     assert "disabled" in resp.json()["detail"].lower()

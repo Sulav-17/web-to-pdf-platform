@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 
 from .config import Settings, get_settings
 from .db import dispose_engine
@@ -55,9 +56,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
-    configure_logging(get_settings().log_level)
+    settings = get_settings()
+    configure_logging(settings.log_level)
     app = FastAPI(title="web-to-pdf engine", version="0.1.0", lifespan=lifespan)
     app.state.rate_limiter = SlidingWindowRateLimiter()
+
+    # Narrow CORS for the browser extension: only chrome-extension:// origins,
+    # only the verbs and headers the extension client actually uses, and no
+    # credentialed cookies. Arbitrary http/https origins are never allowed.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allow_origins,
+        allow_origin_regex=settings.cors_allow_origin_regex,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+        allow_credentials=False,
+        max_age=600,
+    )
 
     @app.middleware("http")
     async def request_context(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:

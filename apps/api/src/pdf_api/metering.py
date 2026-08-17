@@ -21,10 +21,17 @@ REASON_ADMIN: Final = "admin"
 
 COST_HTML: Final = 1
 COST_URL: Final = 2
+COST_PACK_BASE: Final = 2
+COST_PACK_PER_SOURCE: Final = 1
 
 
 def cost_for_kind(kind: str) -> int:
     return COST_URL if kind == "url" else COST_HTML
+
+
+def cost_for_pack(source_count: int) -> int:
+    """One credit per source plus a flat two credits for the pack itself."""
+    return source_count * COST_PACK_PER_SOURCE + COST_PACK_BASE
 
 
 class InsufficientCreditsError(Exception):
@@ -138,6 +145,7 @@ async def create_job_charged(
     expires_at: datetime,
     idempotency_key: str | None = None,
     webhook_url: str | None = None,
+    reason: str = REASON_CONVERSION,
 ) -> ChargedJob:
     """Lock the user, deduplicate, check balance, insert job, and charge."""
     await conn.execute(select(models.users.c.id).where(models.users.c.id == user_id).with_for_update())
@@ -181,7 +189,7 @@ async def create_job_charged(
         insert(models.credit_ledger).values(
             user_id=user_id,
             delta=-cost,
-            reason=REASON_CONVERSION,
+            reason=reason,
             job_id=job_id,
         )
     )

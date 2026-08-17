@@ -10,11 +10,12 @@ from pydantic import BaseModel, Field, model_validator
 
 PageSize = Literal["A4", "Letter"]
 WaitUntil = Literal["load", "networkidle"]
-JobKind = Literal["html", "url"]
+JobKind = Literal["html", "url", "pack_merge"]
 JobStatus = Literal["queued", "rendering", "completed", "failed"]
 BillingPurchase = Literal["starter", "pro", "overage_500"]
 
 MAX_HTML_CHARS = 10 * 1024 * 1024
+MAX_TITLE_CHARS = 300
 
 
 class RenderOptions(BaseModel):
@@ -54,6 +55,46 @@ class JobCreateRequest(ConvertRequest):
     webhook_url: str | None = None
 
 
+class PackItem(BaseModel):
+    """One pack source: either a ``url``, or ``html`` together with a ``title``."""
+
+    url: str | None = None
+    html: Annotated[str, Field(max_length=MAX_HTML_CHARS)] | None = None
+    title: Annotated[str, Field(min_length=1, max_length=MAX_TITLE_CHARS)] | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> PackItem:
+        if bool(self.html) == bool(self.url):
+            raise ValueError("Each item needs exactly one of 'url' or 'html'.")
+        if self.html and not self.title:
+            raise ValueError("Items supplying 'html' must also supply 'title'.")
+        return self
+
+    @property
+    def kind(self) -> Literal["html", "url"]:
+        return "html" if self.html else "url"
+
+    @property
+    def source(self) -> str:
+        value = self.html if self.html is not None else self.url
+        assert value is not None
+        return value
+
+    def display_title(self, index: int) -> str:
+        return self.title or self.url or f"Item {index + 1}"
+
+
+class PackRequest(RenderOptions):
+    """Reading-pack input. Item order is the rendered and merged order."""
+
+    items: Annotated[list[PackItem], Field(min_length=1)]
+    pack_title: Annotated[str, Field(min_length=1, max_length=MAX_TITLE_CHARS)]
+    toc: bool = True
+    title_page: bool = True
+    idempotency_key: Annotated[str, Field(min_length=1, max_length=255)] | None = None
+    webhook_url: str | None = None
+
+
 class JobResponse(BaseModel):
     id: uuid.UUID
     kind: JobKind
@@ -66,6 +107,8 @@ class JobResponse(BaseModel):
     expires_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+    # Additive: signed link, populated only once the job has completed.
+    download_url: str | None = None
 
 
 class UsageJob(BaseModel):

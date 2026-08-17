@@ -9,6 +9,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MB = 1024 * 1024
 
+# Unpacked Chrome extensions get a synthetic 32-char id in the alphabet a-p.
+# This matches only ``chrome-extension://`` origins -- never http/https -- so
+# enabling it for local testing cannot open the API to arbitrary websites.
+DEV_EXTENSION_ORIGIN_REGEX = r"chrome-extension://[a-p]{32}"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -34,6 +39,24 @@ class Settings(BaseSettings):
     output_ttl_seconds: int = 24 * 60 * 60
     storage_dir: str = "./var/storage"
 
+    # Reading packs (Day 4).
+    max_pack_items: int = 25
+    pack_item_timeout_ms: int = 15_000
+
+    # Signed output downloads. Async jobs (including packs) are otherwise
+    # unretrievable. When unset a random per-process secret is used, which
+    # invalidates outstanding links on restart -- set this in production.
+    download_signing_secret: str | None = None
+    download_url_ttl_seconds: int = 24 * 60 * 60
+    public_base_url: str = "http://localhost:8000"
+
+    # CORS for the Manifest V3 browser extension. Only chrome-extension://
+    # origins are ever allowed -- never arbitrary http/https sites. In
+    # development any unpacked extension id is permitted (see the regex above);
+    # in production set the exact packed extension origin(s) here (comma
+    # separated), e.g. "chrome-extension://<store-id>".
+    cors_extension_origins: str = ""
+
     r2_account_id: str | None = None
     r2_access_key_id: str | None = None
     r2_secret_access_key: str | None = None
@@ -57,6 +80,16 @@ class Settings(BaseSettings):
 
     environment: str = "development"
     log_level: str = "INFO"
+
+    @property
+    def cors_allow_origins(self) -> list[str]:
+        """Explicit chrome-extension:// origins allowed (production)."""
+        return [origin.strip() for origin in self.cors_extension_origins.split(",") if origin.strip()]
+
+    @property
+    def cors_allow_origin_regex(self) -> str | None:
+        """Allow unpacked extension ids only in development."""
+        return DEV_EXTENSION_ORIGIN_REGEX if self.environment == "development" else None
 
     @property
     def r2_configured(self) -> bool:

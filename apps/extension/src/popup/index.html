@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CleanPDF</title>
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <header class="head">
+      <div class="brand">CleanPDF</div>
+      <div class="credits" id="credits" title="Remaining credits"></div>
+    </header>
+
+    <section class="actions">
+      <input
+        id="pack-title"
+        class="pack-title"
+        type="text"
+        maxlength="120"
+        placeholder="Reading pack title"
+        autocomplete="off"
+      />
+      <div class="pack-opts">
+        <label><input type="checkbox" id="opt-cover" checked /> Cover page</label>
+        <label><input type="checkbox" id="opt-toc" checked /> Contents</label>
+      </div>
+      <button id="build-pack" class="primary" type="button">Build reading pack</button>
+      <button id="save-page" class="secondary" type="button">
+        Save this page as a clean PDF
+      </button>
+    </section>
+
+    <section class="status" id="status" hidden></section>
+
+    <section class="tabs">
+      <div class="tabs-head">
+        <label class="check-all">
+          <input type="checkbox" id="select-all" />
+          <span>Open tabs</span>
+        </label>
+        <span class="hint" id="selected-count"></span>
+      </div>
+      <p class="hint drag-hint">Drag to set the order they appear in the pack.</p>
+      <ul id="tab-list" class="tab-list"></ul>
+    </section>
+
+    <footer class="foot">
+      <button id="open-options" class="link" type="button">Options &amp; API key</button>
+      <span class="hint" id="mode-hint"></span>
+    </footer>
+
+    <script type="module" src="./popup.ts"></script>
+  </body>
+</html>

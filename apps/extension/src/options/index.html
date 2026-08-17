@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CleanPDF — Options</title>
+    <link rel="stylesheet" href="./options.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>CleanPDF options</h1>
+
+      <section class="card">
+        <h2>Reading &amp; layout</h2>
+        <p class="muted">Applies to locally printed PDFs and to packs built through the API.</p>
+
+        <label class="field">
+          <span>Font size</span>
+          <select id="font-size">
+            <option value="small">Small</option>
+            <option value="medium">Medium</option>
+            <option value="large">Large</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Margins</span>
+          <select id="margin">
+            <option value="narrow">Narrow (8 mm)</option>
+            <option value="normal">Normal (12 mm)</option>
+            <option value="wide">Wide (20 mm)</option>
+          </select>
+        </label>
+
+        <label class="field checkbox">
+          <input type="checkbox" id="include-images" />
+          <span>Include images</span>
+        </label>
+
+        <label class="field">
+          <span>Filename based on</span>
+          <select id="filename-source">
+            <option value="page">Page title</option>
+            <option value="pack">Pack title</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>“Save this page” uses</span>
+          <select id="single-page-mode">
+            <option value="local">Local print dialog (free, offline)</option>
+            <option value="api">CleanPDF API (higher fidelity, costs 1 credit)</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>CleanPDF account</h2>
+        <p class="muted">
+          Only needed for reading packs. Local single-page mode works with no account and makes no
+          network calls.
+        </p>
+
+        <label class="field">
+          <span>API base URL</span>
+          <input id="api-base-url" type="url" placeholder="https://api.example.com" autocomplete="off" />
+        </label>
+
+        <label class="field">
+          <span>API key</span>
+          <input
+            id="api-key"
+            type="password"
+            placeholder="Paste your API key"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+
+        <div class="row">
+          <button id="save-key" class="primary" type="button">Save key</button>
+          <button id="test-key" class="secondary" type="button">Test connection</button>
+          <button id="clear-key" class="danger" type="button">Remove key</button>
+        </div>
+        <p class="muted" id="key-state"></p>
+
+        <details class="help">
+          <summary>Where do I get a key?</summary>
+          <p>
+            CleanPDF does not yet expose a public sign-up or key-creation endpoint. Until it does, an
+            operator provisions a key server-side and shares it with you securely; paste it above.
+          </p>
+        </details>
+      </section>
+
+      <p class="status" id="status" hidden></p>
+    </main>
+    <script type="module" src="./options.ts"></script>
+  </body>
+</html>

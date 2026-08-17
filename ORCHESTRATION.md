@@ -168,3 +168,155 @@ customer-portal links, verified Stripe webhook processing, non-rolling monthly
 credit grants, provider-event idempotency, the usage page/API, and signed
 outbound job callbacks with three bounded attempts. Live Stripe test-clock
 acceptance remains credential-backed and must be completed before launch.
+
+## Task A-PACKS / A-EXT — Days 4-5: reading packs + Manifest V3 extension
+
+Status: implemented. API tests, ruff, mypy, extension typecheck/lint/tests and
+the audited production build all pass. Manual browser acceptance is **not** done
+(see "Unverified" below).
+
+### Part 1 - `POST /v1/packs`
+
+Renders every source in the caller's order, merges them into one PDF with a
+cover page, a contents page whose page numbers are correct, and one bookmark per
+item. Runs asynchronously on the existing job lifecycle.
+
+**Reused, not reinvented.** The endpoint charges through
+`metering.create_job_charged` (same `FOR UPDATE` user lock, same idempotency
+dedupe, same 402), executes through the same claim/refund ladder as single
+conversions, writes through the same `StorageBackend`, and is authenticated and
+rate-limited by the same `PrincipalDep`. To avoid a second lifecycle, the
+try/except ladder in `jobservice.execute_job` was extracted into `_run_job`,
+which both single conversions and packs drive with a `produce()` callback.
+Behaviour of the single-conversion path is unchanged.
+
+**Cost:** one credit per source plus two for the pack
+(`metering.cost_for_pack`). Charged atomically at creation; a failure refunds
+the whole amount through the existing `refund_job`.
+
+**No migration was needed.** The Day 1-3 schema already permitted
+`jobs.kind = 'pack_merge'` and `credit_ledger.reason = 'pack'`
+(`metering.REASON_PACK` existed but was unused), so the only metering change was
+adding a `reason=` parameter to `create_job_charged`, defaulting to the previous
+`REASON_CONVERSION`.
+
+**Partial packs are never delivered.** If any source fails to render the whole
+job fails and every credit is refunded, rather than shipping a document with
+silent gaps.
+
+**TOC page numbers.** The contents page is rendered, measured, and re-rendered
+until its own page count stops changing (max 4 passes), so printed numbers match
+the physical pages the bookmarks land on. A test asserts TOC numbers equal the
+bookmark destinations.
+
+### Contract gap found during the audit: signed download URLs
+
+The pack contract says to reuse "existing signed download URLs". **That
+infrastructure did not exist.** `/v1/convert` returned bytes inline and async
+jobs had no retrieval path at all, so a pack PDF could never have been fetched.
+Because the feature is unusable without it, this was added **additively**:
+
+- `signing.py` - HMAC-SHA256 over `(job_id, expires)` with a purpose string.
+- `GET /v1/jobs/{id}/download?expires=&sig=` - 403 on a bad or expired
+  signature, 410 once the stored output has expired. A valid unexpired signature
+  *is* the authorisation, so this route uses `load_job_any_owner`; every
+  API-key path still uses the ownership-filtered `load_job`.
+- `JobResponse.download_url` - a new **optional** field, populated only for
+  completed jobs. No existing field changed type or meaning, and no database
+  change was required.
+
+New settings: `DOWNLOAD_SIGNING_SECRET` (falls back to a per-process random
+secret with a warning - set it in production), `DOWNLOAD_URL_TTL_SECONDS`,
+`PUBLIC_BASE_URL`, `MAX_PACK_ITEMS`.
+
+### Part 2 - `apps/extension` (Manifest V3)
+
+Vanilla TypeScript + Vite, two build passes: pages/service worker as ES modules,
+and `src/inject/extract-entry.ts` as a self-contained IIFE because
+`chrome.scripting.executeScript({ files })` cannot load ES modules. Mozilla
+Readability is bundled into that IIFE, so the package loads no remote code.
+
+Manifest requests **exactly** `activeTab`, `storage`, `scripting`, `tabs` - no
+host permissions, no `offscreen`. Enforced by a unit test and by
+`scripts/audit-build.mjs`, which also rejects secrets, test keys, localhost
+strings, `eval`, `new Function`, `importScripts`, `document.write` and remote
+`<script src>` in `dist/`.
+
+- **Local single-page mode (default, free):** extract → sanitise → hand to an
+  extension page via memory-only `chrome.storage.session` (deleted on read) →
+  browser print dialog. **No network call.**
+- **Reading packs (API):** only the ticked tabs' cleaned HTML + titles are sent
+  to `POST /v1/packs`; polls `GET /v1/jobs/{id}`; exposes the signed
+  `download_url`. Handles 401/402/403/422/429/410, network failure, and
+  per-tab extraction failure.
+- **Key handling:** stored in `chrome.storage.local` (never `sync`), sent only in
+  the `Authorization` header, never logged, never written to the DOM (options
+  shows a mask and never reads the key back), and `redactSecrets()` scrubs
+  key-shaped text out of any surfaced error.
+
+### Known permission limitation (reported, not worked around)
+
+With no host permissions, Chrome grants script access only through `activeTab` -
+the tab where the user invoked the extension. Therefore **each tab must be
+visited and clicked once** before it can join a pack. The popup marks tabs it
+cannot read and requires an explicit "build with the other N" confirmation, so a
+pack is never silently short. Likewise, fully automatic PDF generation would
+need `offscreen`; it was not added, and local mode uses the print-dialog
+fallback the specification permits.
+
+### Acceptance blocker: no public API-key onboarding endpoint
+
+The repository exposes **no public sign-up or key-creation route** - only the
+`bootstrap.py` CLI. As instructed, no signup route was invented. The extension
+therefore ships manual key onboarding (paste an operator-provisioned key into
+Options). **Fresh-profile API-key onboarding cannot be accepted until a public
+onboarding endpoint exists.**
+
+### Analytics: deliberately none
+
+The project's only PostHog wrapper is server-side and is not a privacy-reviewed
+extension client. Per the specification's own guidance, no analytics were added
+rather than introducing telemetry to satisfy an optional item. The
+`extension_installed` / `reading_pack_created` events remain unimplemented.
+
+### Files added
+
+API: `packs.py`, `signing.py`, `apps/api/tests/test_packs.py`.
+Modified: `routes.py`, `jobservice.py`, `metering.py`, `schemas.py`,
+`config.py`, `.env.example`, `.github/workflows/ci.yml`, `.gitignore`.
+
+Extension (`apps/extension/`): `package.json`, `tsconfig.json`, `biome.json`,
+`vite.config.ts`, `vite.inject.config.ts`, `vitest.config.ts`, `README.md`,
+`public/manifest.json`, `public/icons/*`, `src/` (popup, options, print,
+background, inject, lib), `tests/` (8 files), `scripts/` (icons, audit, zip),
+`store/` (listing, privacy, permissions justification, screenshot checklist).
+
+### Dependencies added
+
+None for the API - `pypdf` was already a dependency and is now actually used for
+merging and bookmarks.
+
+Extension dev dependencies (all dev-only; nothing ships except bundled output):
+`vite` (required bundler), `typescript`, `@types/chrome` (Chrome API types),
+`vitest` + `happy-dom` (tests need a DOM for the sanitiser), `@biomejs/biome`
+(lint + format in one tool, chosen over eslint + plugins to add one dependency
+instead of several), `@mozilla/readability` (the vendored extractor, bundled
+into the build so no code is fetched at runtime).
+
+### Test results
+
+```
+uv run pytest -q         ->  98 passed   (69 pre-existing + 29 new pack tests)
+uv run ruff check .      ->  All checks passed!
+uv run mypy apps/api/src ->  Success: no issues found in 24 source files
+npm run typecheck        ->  clean
+npm run lint             ->  Checked 27 files, no errors
+npm run test             ->  110 passed (8 files)
+npm run build            ->  Build audit passed: 17 files, permissions [activeTab, storage, scripting, tabs]
+```
+
+### Unverified (requires a human with a browser)
+
+The ten-page matrix, the five-tab ordering run, bookmark/TOC/title-page checks in
+a real viewer, options surviving reload, and fresh-profile onboarding are
+**prepared but not performed**. No screenshots were produced.

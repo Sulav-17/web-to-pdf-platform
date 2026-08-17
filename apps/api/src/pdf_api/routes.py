@@ -13,8 +13,9 @@ import stripe
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 
-from . import billing, jobservice, metering, webhooks
+from . import billing, jobservice, metering, signing, webhooks
 from .auth import Principal, PrincipalDep
+from .config import Settings
 from .db import transaction
 from .logging_config import get_logger
 from .schemas import (
@@ -23,6 +24,7 @@ from .schemas import (
     ConvertRequest,
     JobCreateRequest,
     JobResponse,
+    PackRequest,
     RenderOptions,
     UsageResponse,
     WebhookSecretResponse,
@@ -68,7 +70,7 @@ def _engine(request: Request) -> jobservice.EngineState:
     return engine
 
 
-def _render_options(req: ConvertRequest, plan_id: str) -> RenderOptions:
+def _render_options(req: RenderOptions, plan_id: str) -> RenderOptions:
     options = RenderOptions.model_validate(req.model_dump(include=set(RenderOptions.model_fields)))
     if plan_id == "free":
         options.footer_template = (
@@ -98,6 +100,65 @@ def _guard_input(req: ConvertRequest, engine: jobservice.EngineState) -> None:
         )
 
 
+def _guard_pack_input(req: PackRequest, engine: jobservice.EngineState) -> None:
+    """Apply the same size and URL-rendering policy to every pack source."""
+    if len(req.items) > engine.settings.max_pack_items:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"A pack accepts at most {engine.settings.max_pack_items} items",
+        )
+    for index, item in enumerate(req.items):
+        if item.html is not None and len(item.html.encode("utf-8")) > engine.settings.max_html_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=f"item {index + 1} html exceeds {engine.settings.max_html_bytes} bytes",
+            )
+        if item.kind == "url" and not engine.settings.enable_url_rendering:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="URL rendering is disabled (ENABLE_URL_RENDERING=false).",
+            )
+
+
+def _pack_input_hash(req: PackRequest, options: RenderOptions) -> str:
+    payload = json.dumps(
+        {
+            "pack_title": req.pack_title,
+            "toc": req.toc,
+            "title_page": req.title_page,
+            "options": options.model_dump(),
+            "items": [{"kind": item.kind, "source": item.source} for item in req.items],
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _pack_options_snapshot(req: PackRequest, options: RenderOptions) -> dict[str, Any]:
+    """Job metadata for a pack. Source URLs and HTML are deliberately omitted."""
+    snapshot: dict[str, Any] = options.model_dump()
+    snapshot.update(
+        {
+            "pack_title": req.pack_title,
+            "toc": req.toc,
+            "title_page": req.title_page,
+            "item_count": len(req.items),
+            "item_kinds": [item.kind for item in req.items],
+        }
+    )
+    return snapshot
+
+
+async def _guard_webhook_target(webhook_url: str) -> None:
+    try:
+        await validate_target(webhook_url)
+    except SecurityBoundaryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Blocked webhook target: {exc}",
+        ) from exc
+
+
 async def _charge(
     principal: Principal,
     req: ConvertRequest,
@@ -114,13 +175,7 @@ async def _charge(
     input_hash = _input_hash(req.kind, source, options)
 
     if webhook_url is not None:
-        try:
-            await validate_target(webhook_url)
-        except SecurityBoundaryError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Blocked webhook target: {exc}",
-            ) from exc
+        await _guard_webhook_target(webhook_url)
 
     try:
         async with transaction() as conn:
@@ -145,8 +200,11 @@ async def _charge(
     return charged.id, charged.reused, options, source
 
 
-def _job_response(row: dict[str, Any]) -> JobResponse:
-    return JobResponse.model_validate(row)
+def _job_response(row: dict[str, Any], settings: Settings | None = None) -> JobResponse:
+    response = JobResponse.model_validate(row)
+    if settings is not None and response.status == "completed" and row.get("output_r2_key"):
+        response.download_url = signing.download_url(settings, response.id)
+    return response
 
 
 @router.get("/healthz")
@@ -191,7 +249,7 @@ async def convert(
     if timed_out and job["status"] in {"queued", "rendering"}:
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
-            content=_job_response(job).model_dump(mode="json"),
+            content=_job_response(job, engine.settings).model_dump(mode="json"),
             headers={"X-Job-Id": str(job_id)},
         )
     if job["status"] != "completed":
@@ -230,7 +288,7 @@ async def create_job(
         response.status_code = status.HTTP_200_OK
         existing = await jobservice.load_job(job_id, principal.user_id)
         assert existing is not None
-        return _job_response(existing)
+        return _job_response(existing, engine.settings)
 
     job = await jobservice.load_job(job_id, principal.user_id)
     assert job is not None
@@ -244,15 +302,115 @@ async def create_job(
             options=options,
         )
     )
-    return _job_response(job)
+    return _job_response(job, engine.settings)
+
+
+@router.post("/v1/packs", status_code=status.HTTP_202_ACCEPTED)
+async def create_pack(
+    request: Request,
+    req: PackRequest,
+    response: Response,
+    principal: Principal = PrincipalDep,
+) -> JobResponse:
+    """Build one bookmarked reading pack from the caller-ordered sources."""
+    engine = _engine(request)
+    _guard_pack_input(req, engine)
+
+    options = _render_options(req, principal.plan_id)
+    cost = metering.cost_for_pack(len(req.items))
+    input_hash = _pack_input_hash(req, options)
+
+    if req.webhook_url is not None:
+        await _guard_webhook_target(req.webhook_url)
+
+    try:
+        async with transaction() as conn:
+            charged = await metering.create_job_charged(
+                conn,
+                user_id=principal.user_id,
+                api_key_id=principal.api_key_id,
+                kind="pack_merge",
+                input_hash=input_hash,
+                options=_pack_options_snapshot(req, options),
+                cost=cost,
+                expires_at=metering.default_expiry(engine.settings.output_ttl_seconds),
+                idempotency_key=req.idempotency_key,
+                webhook_url=req.webhook_url,
+                reason=metering.REASON_PACK,
+            )
+    except metering.InsufficientCreditsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"Insufficient credits: have {exc.balance}, need {exc.required}",
+        ) from exc
+
+    if charged.reused:
+        response.status_code = status.HTTP_200_OK
+        existing = await jobservice.load_job(charged.id, principal.user_id)
+        assert existing is not None
+        return _job_response(existing, engine.settings)
+
+    job = await jobservice.load_job(charged.id, principal.user_id)
+    assert job is not None
+    _start_job_task(
+        jobservice.execute_pack_job(
+            engine,
+            job_id=charged.id,
+            user_id=principal.user_id,
+            items=list(req.items),
+            options=options,
+            pack_title=req.pack_title,
+            toc=req.toc,
+            title_page=req.title_page,
+        )
+    )
+    return _job_response(job, engine.settings)
 
 
 @router.get("/v1/jobs/{job_id}")
-async def get_job(job_id: uuid.UUID, principal: Principal = PrincipalDep) -> JobResponse:
+async def get_job(
+    request: Request,
+    job_id: uuid.UUID,
+    principal: Principal = PrincipalDep,
+) -> JobResponse:
     job = await jobservice.load_job(job_id, principal.user_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-    return _job_response(job)
+    return _job_response(job, _engine(request).settings)
+
+
+@router.get("/v1/jobs/{job_id}/download")
+async def download_job_output(request: Request, job_id: uuid.UUID, expires: int, sig: str) -> Response:
+    """Fetch finished output via an expiring HMAC link (no API key replay)."""
+    engine = _engine(request)
+    try:
+        signing.verify_download(engine.settings, job_id, expires, sig)
+    except signing.SignatureError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Invalid download link: {exc}",
+        ) from exc
+
+    job = await jobservice.load_job_any_owner(job_id)
+    if job is None or job.get("status") != "completed" or not job.get("output_r2_key"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job output not available")
+
+    try:
+        pdf = await engine.storage.get(str(job["output_r2_key"]))
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Job output has expired",
+        ) from exc
+
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{job_id}.pdf"',
+            "X-Job-Id": str(job_id),
+        },
+    )
 
 
 @router.get("/v1/usage")

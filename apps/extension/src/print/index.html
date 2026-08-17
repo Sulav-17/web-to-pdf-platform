@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CleanPDF</title>
+    <style id="print-style"></style>
+    <style>
+      .cleanpdf-bar {
+        position: sticky;
+        top: 0;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        padding: 10px 16px;
+        background: #0f172a;
+        color: #f8fafc;
+        font: 14px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+      .cleanpdf-bar button {
+        font: inherit;
+        padding: 6px 14px;
+        border: 0;
+        border-radius: 6px;
+        background: #38bdf8;
+        color: #0f172a;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .cleanpdf-empty {
+        padding: 48px 24px;
+        font: 15px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        color: #475569;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="cleanpdf-bar cleanpdf-noprint">
+      <button id="print" type="button">Print / Save as PDF</button>
+      <span>Choose “Save as PDF” as the destination.</span>
+    </div>
+    <main id="content"></main>
+    <script type="module" src="./print.ts"></script>
+  </body>
+</html>

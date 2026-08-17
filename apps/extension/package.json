@@ -1,0 +1,30 @@
+{
+  "name": "cleanpdf-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CleanPDF — turn open tabs into one clean, bookmarked PDF.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src tests",
+    "lint:fix": "biome check --write src tests",
+    "test": "vitest run",
+    "build": "npm run build:main && npm run build:inject && npm run audit",
+    "build:main": "vite build",
+    "build:inject": "vite build --config vite.inject.config.ts",
+    "audit": "node scripts/audit-build.mjs",
+    "icons": "node scripts/make-icons.mjs",
+    "zip": "node scripts/zip.mjs",
+    "dist": "npm run build && npm run zip",
+    "verify": "npm run typecheck && npm run lint && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.5",
+    "@mozilla/readability": "^0.6.0",
+    "@types/chrome": "^0.2.2",
+    "happy-dom": "^20.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.10"
+  }
+}
